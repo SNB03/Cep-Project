@@ -1,38 +1,61 @@
-// middleware/auth.js
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = '727cf1c6a6e271cc3d56f85ec3946f4b93874ffe946658d0a4c60e643d00ebb4667131b98ef8c979e0fcf06428b65fb54784e5b204ad0134859a633c16826467'; // USE ENV VARIABLE IN PRODUCTION
+const JWT_SECRET = process.env.JWT_SECRET; 
+const MOCK_TOKEN = 'mock-authority-token'; 
+// NOTE: We don't need the User model here for this fix, but keeping the necessary module exports.
 
 const protect = (req, res, next) => {
-    let token;
+    let token;
 
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            // Get token from header
-            token = req.headers.authorization.split(' ')[1];
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        token = req.headers.authorization.split(' ')[1];
 
-            // Verify token
-            const decoded = jwt.verify(token, JWT_SECRET);
+        // 🟢 SIMULATION BYPASS CHECK
+        if (token === MOCK_TOKEN) {
+            console.log("Middleware Bypass: Accepting mock-authority-token.");
 
-            // Attach user data to the request (excluding password)
-            req.user = decoded.user;
-            next();
-        } catch (error) {
-            console.error(error);
-            res.status(401).json({ message: 'Not authorized, token failed' });
-        }
-    }
+            const isAdminRoute = req.originalUrl.includes('admin') || req.originalUrl.includes('dashboard');
+            const assumedRole = isAdminRoute ? 'admin' : 'authority';
+            
+            // Setting the ID property to _id for consistency with Mongoose
+            req.user = { 
+                _id: 'mockUserId123', // 🚀 FIX: Use _id here
+                role: assumedRole, 
+                zone: assumedRole === 'admin' ? 'Global' : 'Central' 
+            };
+            return next();
+        }
 
-    if (!token) {
-        res.status(401).json({ message: 'Not authorized, no token' });
-    }
+        // --- STANDARD JWT VERIFICATION ---
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            
+            // The JWT payload is { user: { id, role, zone } }
+            const userPayload = decoded.user;
+
+            // 🚀 CRITICAL FIX: Attach user data, mapping 'id' from the JWT to '_id' for the app/Mongoose
+            req.user = {
+                _id: userPayload.id, 
+                role: userPayload.role,
+                zone: userPayload.zone,
+            };
+            
+            next();
+        } catch (error) {
+            console.error("JWT Verification Failed:", error);
+            res.status(401).json({ message: 'Not authorized, token failed' });
+        }
+    } else {
+        res.status(401).json({ message: 'Not authorized, no token' });
+    }
 };
 
 const authorize = (...roles) => (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-        return res.status(403).json({ message: `User role ${req.user.role} is not authorized to access this route` });
-    }
-    next();
+    if (!req.user || !roles.includes(req.user.role)) {
+        console.log(`Authorization Failed: User role ${req.user?.role} not in required roles [${roles.join(', ')}]`);
+        return res.status(403).json({ message: `User role ${req.user?.role} is not authorized to access this route` });
+    }
+    next();
 };
 
 module.exports = { protect, authorize, JWT_SECRET };
